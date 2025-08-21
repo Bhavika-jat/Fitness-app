@@ -1,0 +1,168 @@
+# app.py
+import streamlit as st
+import pandas as pd
+from datetime import date
+from Backend import User, Workout, BusinessInsights  # Our backend
+
+st.set_page_config(page_title="Fitness Tracker", page_icon="💪", layout="wide")
+
+# -----------------------------
+# UI Sections
+# -----------------------------
+def user_management():
+    st.header("👤 User Management")
+    st.markdown("---")
+
+    # Create
+    st.subheader("Create New User")
+    with st.form("create_user_form"):
+        name = st.text_input("Name")
+        email = st.text_input("Email")
+        weight = st.number_input("Weight (kg)", min_value=0.0, step=0.1, help="Optional")
+        submitted = st.form_submit_button("Add User")
+        if submitted:
+            if not name or not email:
+                st.error("Name and Email are required.")
+            else:
+                ok = User.create(name, email, weight)
+                st.success(f"User '{name}' added successfully!") if ok else st.error("Error adding user.")
+
+    # Read
+    st.subheader("View All Users")
+    users = User.read()
+    if users:
+        df = pd.DataFrame(users, columns=["User ID", "Name", "Email", "Weight"])
+        st.dataframe(df, use_container_width=True)
+
+        user_dict = {u[0]: u[1] for u in users}
+
+        # Update
+        st.subheader("Update User")
+        user_ids = list(user_dict.keys())
+        user_to_update = st.selectbox(
+            "Select User to Update",
+            user_ids,
+            format_func=lambda x: user_dict.get(x, x),
+            key="update_user_select",
+        )
+        if user_to_update:
+            selected_user_data = next(u for u in users if u[0] == user_to_update)
+            weight_value = float(selected_user_data[3]) if selected_user_data[3] is not None else 0.0
+            new_name = st.text_input("New Name", value=selected_user_data[1])
+            new_email = st.text_input("New Email", value=selected_user_data[2])
+            new_weight = st.number_input("New Weight (kg)", value=weight_value)
+            if st.button("Update User", type="primary"):
+                ok = User.update(user_to_update, new_name, new_email, new_weight)
+                if ok:
+                    st.success("User updated successfully!")
+                    st.rerun()
+                else:
+                    st.error("Error updating user.")
+
+        # Delete
+        st.subheader("Delete User")
+        user_to_delete = st.selectbox(
+            "Select User to Delete",
+            user_ids,
+            key="delete_user_select",
+            format_func=lambda x: user_dict.get(x, x),
+        )
+        if st.button("Delete User", key="delete_user_btn"):
+            ok = User.delete(user_to_delete)
+            if ok:
+                st.success("User deleted successfully!")
+                st.rerun()
+            else:
+                st.error("Error deleting user.")
+    else:
+        st.info("No users yet. Add your first user above.")
+
+
+def workout_management():
+    st.header("🏋️ Workout Management")
+    st.markdown("---")
+
+    users = User.read()
+    if not users:
+        st.warning("Please add at least one user before adding a workout.")
+        return
+
+    user_dict = {u[0]: u[1] for u in users}
+
+    # Create Workout
+    st.subheader("Log New Workout")
+    with st.form("create_workout_form"):
+        user_id = st.selectbox(
+            "Select User",
+            list(user_dict.keys()),
+            format_func=lambda x: user_dict.get(x, x),
+        )
+        workout_date = st.date_input("Workout Date", date.today())
+        duration_minutes = st.number_input("Duration (minutes)", min_value=1, step=1)
+        submitted = st.form_submit_button("Log Workout")
+        if submitted:
+            ok = Workout.create(user_id, workout_date, duration_minutes)
+            st.success("Workout logged successfully!") if ok else st.error("Error logging workout.")
+
+    # Read Workouts
+    st.subheader("View All Workouts")
+    workouts = Workout.read()
+    if workouts:
+        df = pd.DataFrame(workouts, columns=["Workout ID", "User ID", "Date", "Duration (min)"])
+        df["User Name"] = df["User ID"].map(user_dict)
+        st.dataframe(df[["Workout ID", "User Name", "User ID", "Date", "Duration (min)"]], use_container_width=True)
+    else:
+        st.info("No workouts logged yet.")
+
+
+def business_insights():
+    st.header("📊 Business Insights")
+    st.markdown("---")
+
+    insights = BusinessInsights.get_insights()
+    if not insights:
+        st.info("No data to show yet.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Users", insights.get("total_users", 0))
+    with col2:
+        st.metric("Total Workouts", insights.get("total_workouts", 0))
+    with col3:
+        st.metric("Average Workout Duration", f"{insights.get('avg_duration', 0):.2f} min")
+
+    st.markdown("---")
+    col4, col5 = st.columns(2)
+    with col4:
+        st.metric("Max Weight Lifted", f"{insights.get('max_weight_lifted', 0):.2f} kg")
+    with col5:
+        st.metric("Min Weight Lifted", f"{insights.get('min_weight_lifted', 0):.2f} kg")
+
+    st.subheader("Top 5 Users by Total Workout Duration")
+    top_users = insights.get("top_users_duration", [])
+    if top_users:
+        df = pd.DataFrame(top_users, columns=["User", "Total Duration (min)"])
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No workout data available to show top users.")
+
+
+# -----------------------------
+# App shell with navigation
+# -----------------------------
+st.title("💪 Fitness Tracker Application")
+with st.sidebar:
+    st.header("Navigation")
+    page = st.radio(
+        "Go to",
+        ["User Management", "Workout Management", "Business Insights"],
+        index=0,
+    )
+
+if page == "User Management":
+    user_management()
+elif page == "Workout Management":
+    workout_management()
+else:
+    business_insights()
