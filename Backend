@@ -1,0 +1,358 @@
+# backend_fn.py
+import os
+from uuid import uuid4
+from datetime import date
+import psycopg2
+from psycopg2.extras import execute_values
+from dotenv import load_dotenv
+
+# -----------------------------
+# Load environment variables
+# -----------------------------
+load_dotenv()
+DB_NAME = os.getenv("DB_NAME", "Fitness Application")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "Bhavika@12345")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+
+def get_connection():
+    """Establish a connection to PostgreSQL."""
+    try:
+        return psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+        )
+    except psycopg2.Error as e:
+        print(f"[DB] Connection error: {e}")
+        return None
+
+
+# -----------------------------
+# Schema initialization (run once on import)
+# -----------------------------
+def init_db():
+    conn = get_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            # NOTE: We generate UUIDs in Python, so no extension needed.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id UUID PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    weight DECIMAL(5,2)
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS workouts (
+                    workout_id UUID PRIMARY KEY,
+                    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                    workout_date DATE NOT NULL,
+                    duration_minutes INT NOT NULL CHECK (duration_minutes > 0)
+                );
+            """)
+            # For min/max weight lifted in insights
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS exercises (
+                    exercise_id UUID PRIMARY KEY,
+                    workout_id UUID REFERENCES workouts(workout_id) ON DELETE CASCADE,
+                    exercise_name VARCHAR(255),
+                    sets INT,
+                    reps INT,
+                    weight_lifted DECIMAL(6,2)
+                );
+            """)
+            # Optional tables for future features
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS friends (
+                    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                    friend_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                    PRIMARY KEY (user_id, friend_id)
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS goals (
+                    goal_id UUID PRIMARY KEY,
+                    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                    goal_description VARCHAR(255),
+                    target_value INT,
+                    progress_value INT DEFAULT 0
+                );
+            """)
+        conn.commit()
+    except psycopg2.Error as e:
+        print(f"[DB] Schema init error: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+# -----------------------------
+# User CRUD
+# -----------------------------
+class User:
+    @staticmethod
+    def create(name: str, email: str, weight):
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                user_id = str(uuid4())
+                cur.execute(
+                    "INSERT INTO users (user_id, name, email, weight) VALUES (%s, %s, %s, %s)",
+                    (user_id, name, email, weight if weight != "" else None),
+                )
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] User.create error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    @staticmethod
+    def read(user_id=None):
+        conn = get_connection()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                if user_id:
+                    cur.execute(
+                        "SELECT user_id, name, email, weight FROM users WHERE user_id = %s",
+                        (user_id,),
+                    )
+                else:
+                    cur.execute("SELECT user_id, name, email, weight FROM users ORDER BY name ASC")
+                return cur.fetchall()
+        except psycopg2.Error as e:
+            print(f"[DB] User.read error: {e}")
+            return []
+        finally:
+            conn.close()
+
+    @staticmethod
+    def update(user_id: str, name: str, email: str, weight):
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET name = %s, email = %s, weight = %s WHERE user_id = %s",
+                    (name, email, weight if weight != "" else None, user_id),
+                )
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] User.update error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    @staticmethod
+    def delete(user_id: str):
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] User.delete error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+
+# -----------------------------
+# Workout CRUD
+# -----------------------------
+class Workout:
+    @staticmethod
+    def create(user_id: str, workout_date: date, duration_minutes: int):
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                workout_id = str(uuid4())
+                cur.execute(
+                    "INSERT INTO workouts (workout_id, user_id, workout_date, duration_minutes) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (workout_id, user_id, workout_date, duration_minutes),
+                )
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] Workout.create error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    @staticmethod
+    def read(workout_id=None, user_id=None):
+        conn = get_connection()
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as cur:
+                if workout_id:
+                    cur.execute(
+                        "SELECT workout_id, user_id, workout_date, duration_minutes "
+                        "FROM workouts WHERE workout_id = %s",
+                        (workout_id,),
+                    )
+                elif user_id:
+                    cur.execute(
+                        "SELECT workout_id, user_id, workout_date, duration_minutes "
+                        "FROM workouts WHERE user_id = %s ORDER BY workout_date DESC",
+                        (user_id,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT workout_id, user_id, workout_date, duration_minutes "
+                        "FROM workouts ORDER BY workout_date DESC"
+                    )
+                return cur.fetchall()
+        except psycopg2.Error as e:
+            print(f"[DB] Workout.read error: {e}")
+            return []
+        finally:
+            conn.close()
+
+    @staticmethod
+    def update(workout_id: str, workout_date: date, duration_minutes: int):
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE workouts SET workout_date = %s, duration_minutes = %s WHERE workout_id = %s",
+                    (workout_date, duration_minutes, workout_id),
+                )
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] Workout.update error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    @staticmethod
+    def delete(workout_id: str):
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM workouts WHERE workout_id = %s", (workout_id,))
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] Workout.delete error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+
+# -----------------------------
+# (Optional) Exercise minimal API
+# -----------------------------
+class Exercise:
+    @staticmethod
+    def bulk_add(workout_id: str, rows):
+        """
+        rows: list of tuples -> (exercise_name, sets, reps, weight_lifted)
+        """
+        if not rows:
+            return True
+        conn = get_connection()
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as cur:
+                data = [(str(uuid4()), workout_id, r[0], r[1], r[2], r[3]) for r in rows]
+                execute_values(
+                    cur,
+                    "INSERT INTO exercises (exercise_id, workout_id, exercise_name, sets, reps, weight_lifted) "
+                    "VALUES %s",
+                    data,
+                )
+            conn.commit()
+            return True
+        except psycopg2.Error as e:
+            print(f"[DB] Exercise.bulk_add error: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+
+# -----------------------------
+# Business Insights
+# -----------------------------
+class BusinessInsights:
+    @staticmethod
+    def get_insights():
+        conn = get_connection()
+        if not conn:
+            return {}
+        insights = {}
+        try:
+            with conn.cursor() as cur:
+                # Total users
+                cur.execute("SELECT COUNT(*) FROM users")
+                insights["total_users"] = cur.fetchone()[0] or 0
+
+                # Total workouts
+                cur.execute("SELECT COUNT(*) FROM workouts")
+                insights["total_workouts"] = cur.fetchone()[0] or 0
+
+                # Avg workout duration
+                cur.execute("SELECT AVG(duration_minutes) FROM workouts")
+                insights["avg_duration"] = float(cur.fetchone()[0] or 0)
+
+                # Min/Max weight lifted (may be NULL if no exercises yet)
+                cur.execute("SELECT MAX(weight_lifted) FROM exercises")
+                insights["max_weight_lifted"] = float(cur.fetchone()[0] or 0)
+                cur.execute("SELECT MIN(weight_lifted) FROM exercises WHERE weight_lifted IS NOT NULL")
+                insights["min_weight_lifted"] = float(cur.fetchone()[0] or 0)
+
+                # Top users by total workout duration
+                cur.execute("""
+                    SELECT u.name, COALESCE(SUM(w.duration_minutes), 0) AS total_duration
+                    FROM users u
+                    LEFT JOIN workouts w ON u.user_id = w.user_id
+                    GROUP BY u.user_id, u.name
+                    ORDER BY total_duration DESC, u.name ASC
+                    LIMIT 5
+                """)
+                insights["top_users_duration"] = cur.fetchall()
+
+            return insights
+        except psycopg2.Error as e:
+            print(f"[DB] BusinessInsights.get_insights error: {e}")
+            return {}
+        finally:
+            conn.close()
+
+
+# Run schema creation at import
+init_db()
